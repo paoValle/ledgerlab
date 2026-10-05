@@ -116,9 +116,16 @@ impl FromStr for Amount {
             return Err(MoneyError::TooPrecise(text.to_owned()));
         }
 
-        let whole: i64 = whole
-            .parse()
-            .map_err(|_| MoneyError::OutOfRange(text.to_owned()))?;
+        // A dot with nothing on one side is a decimal number with a zero there: `.5` and `25.` are
+        // what exports and people write. Treating the empty side as a parse failure is how `.5` ended
+        // up reported as a range error, which named the wrong cause.
+        let whole: i64 = if whole.is_empty() {
+            0
+        } else {
+            whole
+                .parse()
+                .map_err(|_| MoneyError::OutOfRange(text.to_owned()))?
+        };
         let padding = 6 - fraction.len();
         let fraction: i64 = if fraction.is_empty() {
             0
@@ -229,6 +236,36 @@ mod tests {
             Err(MoneyError::NotANumber("$12".to_owned()))
         );
         assert_eq!(Amount::from_str(""), Err(MoneyError::Empty));
+    }
+
+    #[test]
+    fn a_dot_without_a_side_means_what_it_looks_like() {
+        for (text, micros) in [
+            (".5", 500_000),
+            ("25.", 25_000_000),
+            ("-.5", -500_000),
+            (".000001", 1),
+        ] {
+            assert_eq!(
+                Amount::from_str(text).expect(text).micros(),
+                micros,
+                "{text}"
+            );
+        }
+        // the canonical form is the long one, so a short spelling never reaches the log
+        assert_eq!(
+            Amount::from_str(".5").expect("parses").to_decimal(),
+            "0.500000"
+        );
+        // and a dot with nothing on either side is still not a number
+        assert_eq!(
+            Amount::from_str("."),
+            Err(MoneyError::NotANumber(".".to_owned()))
+        );
+        assert_eq!(
+            Amount::from_str("..5"),
+            Err(MoneyError::NotANumber("..5".to_owned()))
+        );
     }
 
     #[test]
