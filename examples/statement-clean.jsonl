@@ -1,0 +1,6 @@
+# What the bank says, for the same period, in its own order.
+# These are the same four amounts the ledger booked on `assets:bank`: 100 + 50 - 20 - 1.05.
+{"reference":"ch_1","amount":"100.000000"}
+{"reference":"ch_2","amount":"50.000000"}
+{"reference":"re_1","amount":"-20.000000"}
+{"reference":"fee_1","amount":"-1.050000"}

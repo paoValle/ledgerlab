@@ -1,0 +1,6 @@
+# The statement as it looks before everything has cleared: the refund is still in flight, so the
+# bank has not seen it yet. This is a timing difference, not an error, and the report says so
+# instead of calling it a divergence.
+{"reference":"ch_1","amount":"100.000000"}
+{"reference":"ch_2","amount":"50.000000"}
+{"reference":"fee_1","amount":"-1.050000"}

@@ -1,0 +1,14 @@
+# Only ignores what is noise for this project.
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/*
+*.swp
+*~
+
+# --- artifacts ---
+/tmp/
+*.log
+/target/
+# the generated report is committed on purpose: it is the evidence, not an artifact

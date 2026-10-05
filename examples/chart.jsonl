@@ -1,0 +1,6 @@
+# One chart of accounts, four accounts. Every invariant this ledger enforces is declared here,
+# which is why a chart is an input and not a constant in the code.
+{"id":"assets:bank","kind":"asset","min_balance":"0.000000"}
+{"id":"assets:receivable","kind":"asset","min_balance":"0.000000"}
+{"id":"revenue:subscriptions","kind":"revenue"}
+{"id":"expenses:fees","kind":"expense"}

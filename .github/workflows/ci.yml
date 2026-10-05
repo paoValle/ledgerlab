@@ -1,0 +1,56 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-targets
+
+      # the demo is the README's claim, so it is run and then asserted
+      - name: build the demo ledger twice
+        run: |
+          cargo run --quiet --release -- open --log target/demo.jsonl --accounts examples/chart.jsonl
+          cargo run --quiet --release -- apply --log target/demo.jsonl --pending examples/activity.jsonl
+          cargo run --quiet --release -- apply --log target/demo.jsonl --pending examples/activity.jsonl
+          test "$(wc -l < target/demo.jsonl)" = "8" # 4 accounts + 4 transactions: no double charge
+
+      - name: the invariants must hold
+        run: cargo run --quiet --release -- verify --log target/demo.jsonl
+
+      - name: a matching statement reconciles, a diverging one fails
+        run: |
+          cargo run --quiet --release -- reconcile --log target/demo.jsonl \
+            --account assets:bank --statement examples/statement-clean.jsonl
+          if cargo run --quiet --release -- reconcile --log target/demo.jsonl \
+               --account assets:bank --statement examples/statement-divergent.jsonl; then
+            echo "::error::a wrong amount was reconciled silently"; exit 1
+          fi
+          # a pending entry is a timing difference: reported, not a failure
+          cargo run --quiet --release -- reconcile --log target/demo.jsonl \
+            --account assets:bank --statement examples/statement-pending.jsonl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: report
+          path: reports/

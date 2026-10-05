@@ -1,0 +1,8 @@
+# Four transactions: two subscriptions, a refund, and the payment processor's fee.
+# Amounts are signed: positive debits, negative credits, and every transaction sums to zero.
+# `reference` is what an external statement will use, and the refund is deliberately a
+# subtraction from revenue rather than a negative charge.
+{"id":"tx-1","idempotency_key":"ch_1","reference":"ch_1","memo":"subscription","postings":[{"account":"assets:bank","amount":"100.000000"},{"account":"revenue:subscriptions","amount":"-100.000000"}]}
+{"id":"tx-2","idempotency_key":"ch_2","reference":"ch_2","memo":"subscription","postings":[{"account":"assets:bank","amount":"50.000000"},{"account":"revenue:subscriptions","amount":"-50.000000"}]}
+{"id":"tx-3","idempotency_key":"re_1","reference":"re_1","memo":"refund","postings":[{"account":"assets:bank","amount":"-20.000000"},{"account":"revenue:subscriptions","amount":"20.000000"}]}
+{"id":"tx-4","idempotency_key":"fee_1","reference":"fee_1","memo":"processor fee","postings":[{"account":"expenses:fees","amount":"1.050000"},{"account":"assets:bank","amount":"-1.050000"}]}

@@ -1,0 +1,7 @@
+# The same statement with one number changed: the bank charged 1.50 in fees, the ledger booked
+# 1.05. Everything after this line is unaffected; the divergence is exactly here, and the running
+# balances at that point are what the report prints.
+{"reference":"ch_1","amount":"100.000000"}
+{"reference":"ch_2","amount":"50.000000"}
+{"reference":"re_1","amount":"-20.000000"}
+{"reference":"fee_1","amount":"-1.500000"}
