@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    # Minors are merged when CI is green. A major of `proptest` or `serde` is a decision, and for
+    # a crate whose value is arithmetic that is auditable, it is a decision worth reading.
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
