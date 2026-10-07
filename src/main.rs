@@ -25,8 +25,8 @@ use std::process::ExitCode;
 
 use ledgerlab::reconcile::ReconciliationReason;
 use ledgerlab::{
-    audit, ledger::Event, reconcile, Account, Amount, Ledger, Log, Reconciliation, StatementEntry,
-    Transaction,
+    audit, compact, ledger::Event, reconcile, Account, Amount, Ledger, Log, Reconciliation,
+    StatementEntry, Transaction,
 };
 
 const USAGE: &str = "\
@@ -37,6 +37,8 @@ ledgerlab — a double-entry ledger that proves its invariants
   balances  --log <file> [--json]
   verify    --log <file> [--json]
   reconcile --log <file> --account <id> --statement <statement.jsonl> [--json]
+  snapshot  --log <file> --out <file>  write the state as a snapshot, for a replay to start from
+  compact   --log <file> --out <file>  the newest snapshot and the events after it, nothing else
   report    --log <file> --account <id> --statement <label=file>... [--out reports/latest.md]
 
 Exit codes: 0 ok, 1 an invariant failed or a statement diverged, 2 usage or input error.";
@@ -126,6 +128,8 @@ fn run(raw: &[String]) -> Result<ExitCode, String> {
         "apply" => apply(&args),
         "balances" => balances(&args),
         "verify" => verify(&args),
+        "snapshot" => snapshot(&args),
+        "compact" => compact_command(&args),
         "reconcile" => reconcile_command(&args),
         "report" => report(&args),
         other => Err(format!("unknown command {other:?}\n\n{USAGE}")),
@@ -226,6 +230,68 @@ fn balances(args: &Args) -> Result<ExitCode, String> {
 }
 
 /// Audits the ledger.
+/// Writes the current state as a snapshot, appended to the log.
+///
+/// It is appended and not written in place, like everything else: the log stays append-only, and a
+/// second snapshot later simply supersedes this one.
+fn snapshot(args: &Args) -> Result<ExitCode, String> {
+    let log = Log::new(args.required("log")?);
+    let ledger = load(&log)?;
+    let event = ledger.snapshot();
+    log.append(&event).map_err(|error| error.to_string())?;
+
+    if args.is_set("json") {
+        let value = serde_json::json!({
+            "sequence": ledger.sequence(),
+            "accounts": ledger.accounts().len(),
+            "transactions": ledger.len(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?
+        );
+    } else {
+        println!(
+            "snapshot at sequence {}: {} account(s), {} transaction(s)",
+            ledger.sequence(),
+            ledger.accounts().len(),
+            ledger.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Writes the events a compacted log carries into a new file.
+///
+/// The input is read and left alone: a ledger is not rewritten in place by the tool that reads it.
+fn compact_command(args: &Args) -> Result<ExitCode, String> {
+    let source = Log::new(args.required("log")?);
+    let out = Log::new(args.required("out")?);
+    let events = source.read().map_err(|error| error.to_string())?;
+    let kept = compact(&events).map_err(|error| error.to_string())?;
+    out.write_new(&kept).map_err(|error| error.to_string())?;
+
+    if args.is_set("json") {
+        let value = serde_json::json!({
+            "in": events.len(),
+            "out": kept.len(),
+            "dropped": events.len() - kept.len(),
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?
+        );
+    } else {
+        println!(
+            "wrote {}: {} event(s) kept (the newest snapshot and the tail), {} dropped",
+            out.path().display(),
+            kept.len(),
+            events.len() - kept.len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 fn verify(args: &Args) -> Result<ExitCode, String> {
     let ledger = load(&Log::new(args.required("log")?))?;
     let report = audit(&ledger);

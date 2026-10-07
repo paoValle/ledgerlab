@@ -107,6 +107,25 @@ pub enum Event {
         /// The transaction, as accepted.
         transaction: Transaction,
     },
+    /// Everything before it, summarised: the state a replay can start from.
+    ///
+    /// The snapshot carries the whole state and not only the balances — the chart, the balances,
+    /// and the accepted transactions — because idempotency is a promise about transactions that
+    /// were already applied, and a log that cannot answer "was this one of them" is a log that
+    /// charges twice. It is written as a checkable claim, not as an oracle: replay recomputes the
+    /// balances from the transactions that are inside it and refuses a snapshot that does not add
+    /// up (see ADR 0005 in the README).
+    #[serde(rename = "balances.snapshot")]
+    BalancesSnapshot {
+        /// Position in the log it covers: the state after this sequence number.
+        sequence: u64,
+        /// The chart, sorted by id.
+        accounts: Vec<Account>,
+        /// The balances, sorted by account id.
+        balances: BTreeMap<String, Amount>,
+        /// The accepted transactions, in sequence order, starting at 1.
+        entries: Vec<(u64, Transaction)>,
+    },
 }
 
 /// The result of applying a transaction.
@@ -167,6 +186,11 @@ pub enum LedgerError {
         /// The minimum it declares.
         minimum: Amount,
     },
+    /// A snapshot does not add up: it is refused rather than believed.
+    SnapshotInvalid {
+        /// What does not add up.
+        detail: String,
+    },
     /// Arithmetic on money failed.
     Money(crate::money::MoneyError),
 }
@@ -202,6 +226,10 @@ impl std::fmt::Display for LedgerError {
             } => write!(
                 f,
                 "account {account:?} would hold {balance}, below its declared minimum {minimum}"
+            ),
+            Self::SnapshotInvalid { detail } => write!(
+                f,
+                "a snapshot was refused instead of believed: {detail}"
             ),
             Self::Money(error) => write!(f, "{error}"),
         }
@@ -321,6 +349,10 @@ impl Ledger {
     }
 
     /// Rebuilds a ledger from events. This is what makes the log the truth and the state a cache.
+    ///
+    /// A snapshot in the middle of the log **replaces** the state: everything before it is
+    /// summarised by it, which is what lets a compacted log be replayed without the events it no
+    /// longer carries. A snapshot that goes backwards, or one that does not add up, is refused.
     pub fn replay(events: &[Event]) -> Result<Self, LedgerError> {
         let mut ledger = Self::new();
         for event in events {
@@ -341,6 +373,22 @@ impl Ledger {
                             got: *sequence,
                         });
                     }
+                }
+                Event::BalancesSnapshot {
+                    sequence,
+                    accounts,
+                    balances,
+                    entries,
+                } => {
+                    if *sequence < ledger.sequence {
+                        return Err(LedgerError::SnapshotInvalid {
+                            detail: format!(
+                                "it covers sequence {sequence}, which is behind the {}",
+                                ledger.sequence
+                            ),
+                        });
+                    }
+                    ledger = Self::adopt(*sequence, accounts, balances, entries)?;
                 }
             }
         }
@@ -387,6 +435,108 @@ impl Ledger {
     #[must_use]
     pub fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    /// The state as a snapshot event: what a replay can start from, and what a compaction leaves
+    /// behind in place of the events it drops.
+    ///
+    /// The chart is sorted by id and the balances are a `BTreeMap`, so the same state produces the
+    /// same bytes: a snapshot that changed every time it was written would be impossible to compare
+    /// from one day to the next.
+    #[must_use]
+    pub fn snapshot(&self) -> Event {
+        Event::BalancesSnapshot {
+            sequence: self.sequence,
+            accounts: self.accounts.values().cloned().collect(),
+            balances: self.balances.clone(),
+            entries: self.entries.clone(),
+        }
+    }
+
+    /// Rebuilds a ledger from a snapshot, checking the snapshot instead of believing it.
+    ///
+    /// A snapshot is a claim like any other. What is checked here is what must be true of the state
+    /// itself: the transactions are numbered from 1 without gaps, each of them sums to zero and
+    /// names accounts that exist, no idempotency key appears twice, and the balances are the sum of
+    /// the transactions the snapshot carries. The balances are **recomputed** rather than taken on
+    /// trust, which is the same thing [`crate::audit`] does for a whole log.
+    ///
+    /// The minimum-balance rule is deliberately not re-run: it is a rule about *applying* a
+    /// transaction, and it was applied when the transaction was applied. What must hold now is the
+    /// state, and that is what is checked.
+    fn adopt(
+        sequence: u64,
+        accounts: &[Account],
+        balances: &BTreeMap<String, Amount>,
+        entries: &[(u64, Transaction)],
+    ) -> Result<Self, LedgerError> {
+        let mut ledger = Self::new();
+        // the chart first: opening an account is what creates its balance entry, so a chart opened
+        // after the sums would zero the sums
+        for account in accounts {
+            ledger.open(account.clone())?;
+        }
+
+        for (position, (number, transaction)) in entries.iter().enumerate() {
+            let expected = u64::try_from(position).unwrap_or(u64::MAX) + 1;
+            if *number != expected {
+                return Err(LedgerError::SequenceMismatch {
+                    expected,
+                    got: *number,
+                });
+            }
+            if !transaction.sum()?.is_zero() {
+                return Err(LedgerError::SnapshotInvalid {
+                    detail: format!(
+                        "transaction {} at sequence {number} does not sum to zero",
+                        transaction.id
+                    ),
+                });
+            }
+            for posting in &transaction.postings {
+                if !ledger.accounts.contains_key(&posting.account) {
+                    return Err(LedgerError::SnapshotInvalid {
+                        detail: format!(
+                            "transaction {} posts to {}, which the snapshot does not open",
+                            transaction.id, posting.account
+                        ),
+                    });
+                }
+                let balance = ledger
+                    .balances
+                    .entry(posting.account.clone())
+                    .or_insert(Amount::ZERO);
+                *balance = balance
+                    .checked_add(posting.amount)
+                    .map_err(LedgerError::Money)?;
+            }
+            if ledger
+                .applied
+                .insert(transaction.idempotency_key.clone(), transaction.clone())
+                .is_some()
+            {
+                return Err(LedgerError::IdempotencyConflict {
+                    key: transaction.idempotency_key.clone(),
+                });
+            }
+            ledger.entries.push((*number, transaction.clone()));
+        }
+
+        let last = entries.last().map_or(0, |(number, _)| *number);
+        if last != sequence {
+            return Err(LedgerError::SnapshotInvalid {
+                detail: format!(
+                    "it covers sequence {sequence}, but its transactions end at {last}"
+                ),
+            });
+        }
+        if &ledger.balances != balances {
+            return Err(LedgerError::SnapshotInvalid {
+                detail: "its balances are not the sum of the transactions it carries".to_owned(),
+            });
+        }
+        ledger.sequence = sequence;
+        Ok(ledger)
     }
 }
 
