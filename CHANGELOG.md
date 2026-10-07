@@ -5,6 +5,8 @@ versioning [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-07
+
 ### Added
 - `snapshot`: appends the whole state — the chart, the balances and the accepted transactions — as a
   `balances.snapshot` event that a replay can start from.
