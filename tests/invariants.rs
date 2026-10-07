@@ -365,3 +365,219 @@ fn temp_path(name: &str) -> std::path::PathBuf {
     ));
     path
 }
+
+#[test]
+fn a_compacted_log_replays_to_the_same_state_as_the_whole_one() {
+    // what compaction has to preserve, and the reason the whole thing is allowed at all: dropping
+    // the events a snapshot covers must not change a single number
+    let mut events: Vec<Event> = chart()
+        .into_iter()
+        .map(|account| Event::AccountOpened { account })
+        .collect();
+    let mut ledger = ledger();
+    for transaction in books(&[(0, 1, 1_000_000), (2, 3, 5_000)]) {
+        ledger.apply(transaction.clone()).expect("applies");
+        events.push(Event::TransactionApplied {
+            sequence: ledger.sequence(),
+            transaction,
+        });
+    }
+
+    let snapshot = ledger.snapshot();
+    let full = &events;
+    let compacted = ledgerlab::compact(&[full.clone(), vec![snapshot.clone()]].concat())
+        .expect("a snapshot to compact from");
+
+    let whole = Ledger::replay(full).expect("replays");
+    let from_snapshot = Ledger::replay(&compacted).expect("replays from the snapshot");
+
+    assert_eq!(from_snapshot.accounts(), whole.accounts());
+    assert_eq!(from_snapshot.balances(), whole.balances());
+    assert_eq!(from_snapshot.entries(), whole.entries());
+    assert_eq!(from_snapshot.sequence(), whole.sequence());
+    assert_eq!(compacted.len(), 1, "everything before the snapshot is gone");
+
+    // and the tail is still applied on top of it
+    let mut extra = books(&[(0, 1, 700)]).remove(0);
+    extra.id = "after-the-snapshot".to_owned();
+    extra.idempotency_key = "after-the-snapshot".to_owned();
+    let tail = Event::TransactionApplied {
+        sequence: ledger.sequence() + 1,
+        transaction: extra,
+    };
+    let with_tail = Ledger::replay(&[compacted, vec![tail.clone()]].concat()).expect("replays");
+    let with_tail_whole = Ledger::replay(&[events, vec![tail]].concat()).expect("replays");
+    assert_eq!(with_tail.balances(), with_tail_whole.balances());
+    assert_eq!(with_tail.sequence(), with_tail_whole.sequence());
+}
+
+#[test]
+fn idempotency_survives_a_compaction() {
+    // the promise a snapshot must not break: applying the same file twice charges nobody twice, and
+    // it has to keep holding after the transactions are no longer in the log as events
+    let mut events: Vec<Event> = chart()
+        .into_iter()
+        .map(|account| Event::AccountOpened { account })
+        .collect();
+    let mut ledger = ledger();
+    let transaction = books(&[(0, 1, 1_000_000)]).remove(0);
+    ledger.apply(transaction.clone()).expect("applies");
+    events.push(Event::TransactionApplied {
+        sequence: ledger.sequence(),
+        transaction: transaction.clone(),
+    });
+    let snapshot = ledger.snapshot();
+    let compacted = ledgerlab::compact(&[events, vec![snapshot]].concat()).expect("a snapshot");
+
+    let mut replayed = Ledger::replay(&compacted).expect("replays");
+    assert_eq!(
+        replayed.apply(transaction.clone()).expect("a retry"),
+        Applied::AlreadyApplied
+    );
+
+    let mut impostor = transaction;
+    impostor.postings[0].amount = Amount::from_micros(999_999);
+    impostor.postings[1].amount = Amount::from_micros(-999_999);
+    assert!(matches!(
+        replayed.apply(impostor),
+        Err(LedgerError::IdempotencyConflict { .. })
+    ));
+}
+
+#[test]
+fn a_snapshot_that_does_not_add_up_is_refused_instead_of_believed() {
+    let mut events: Vec<Event> = chart()
+        .into_iter()
+        .map(|account| Event::AccountOpened { account })
+        .collect();
+    let mut ledger = ledger();
+    for transaction in books(&[(0, 1, 1_000_000), (2, 3, 5_000)]) {
+        ledger.apply(transaction.clone()).expect("applies");
+        events.push(Event::TransactionApplied {
+            sequence: ledger.sequence(),
+            transaction,
+        });
+    }
+    let snapshot = ledger.snapshot();
+    assert!(
+        Ledger::replay(std::slice::from_ref(&snapshot)).is_ok(),
+        "the honest one replays"
+    );
+
+    // a balance that is not the sum of the transactions it carries
+    let Event::BalancesSnapshot {
+        accounts,
+        balances,
+        entries,
+        ..
+    } = snapshot.clone()
+    else {
+        panic!("a snapshot");
+    };
+    let mut lying = balances.clone();
+    lying.insert("assets:bank".to_owned(), Amount::from_micros(999));
+    let forged = Event::BalancesSnapshot {
+        sequence: ledger.sequence(),
+        accounts: accounts.clone(),
+        balances: lying,
+        entries: entries.clone(),
+    };
+    let error = Ledger::replay(&[forged]).expect_err("a lie is not replayed");
+    assert!(
+        matches!(error, LedgerError::SnapshotInvalid { .. }),
+        "{error:?}"
+    );
+
+    // a snapshot that covers less than the events before it: a rollback, not a summary
+    let mut earlier = snapshot.clone();
+    if let Event::BalancesSnapshot { sequence, .. } = &mut earlier {
+        *sequence -= 1;
+    }
+    let error = Ledger::replay(&[snapshot.clone(), earlier]).expect_err("no going backwards");
+    assert!(
+        matches!(error, LedgerError::SnapshotInvalid { .. }),
+        "{error:?}"
+    );
+
+    // and a snapshot whose transactions are numbered with a gap
+    let mut holed = snapshot;
+    if let Event::BalancesSnapshot { entries, .. } = &mut holed {
+        entries.remove(0);
+    }
+    let error = Ledger::replay(&[holed]).expect_err("a gap is not a history");
+    assert!(
+        matches!(
+            error,
+            LedgerError::SequenceMismatch { .. } | LedgerError::SnapshotInvalid { .. }
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn compacting_without_a_snapshot_is_refused() {
+    let events: Vec<Event> = chart()
+        .into_iter()
+        .map(|account| Event::AccountOpened { account })
+        .collect();
+    let error = ledgerlab::compact(&events).expect_err("nothing to compact from");
+    assert!(
+        matches!(error, ledgerlab::LogError::NothingToCompact),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn the_same_state_writes_the_same_snapshot_bytes() {
+    // a snapshot that changed every time it was written could not be compared from one day to the
+    // next, and comparing logs is what this tool is for
+    let mut ledger = Ledger::new();
+    for account in chart() {
+        ledger.open(account).expect("opens");
+    }
+    for transaction in books(&[(0, 1, 1_000_000), (2, 3, 5_000)]) {
+        ledger.apply(transaction).expect("applies");
+    }
+    let once = serde_json::to_string(&ledger.snapshot()).expect("encodes");
+    let twice = serde_json::to_string(&ledger.snapshot()).expect("encodes");
+    assert_eq!(once, twice);
+}
+
+#[test]
+fn a_compacted_file_is_written_and_never_overwritten() {
+    let source = temp_path("compact-source");
+    let out = temp_path("compact-out");
+    let log = Log::new(&source);
+    let mut ledger = Ledger::new();
+    for account in chart() {
+        ledger.open(account.clone()).expect("opens");
+        log.append(&Event::AccountOpened { account })
+            .expect("append");
+    }
+    let transaction = books(&[(0, 1, 1_000_000)]).remove(0);
+    ledger.apply(transaction.clone()).expect("applies");
+    log.append(&Event::TransactionApplied {
+        sequence: ledger.sequence(),
+        transaction,
+    })
+    .expect("append");
+    log.append(&ledger.snapshot()).expect("append");
+
+    let events = log.read().expect("reads");
+    let kept = ledgerlab::compact(&events).expect("a snapshot");
+    assert_eq!(kept.len(), 1);
+    Log::new(&out).write_new(&kept).expect("writes");
+
+    // the input is untouched, and the output is not a file this command will replace
+    assert_eq!(log.read().expect("reads").len(), events.len());
+    let error = Log::new(&out)
+        .write_new(&kept)
+        .expect_err("never overwrites");
+    assert!(
+        matches!(error, ledgerlab::LogError::Exists { .. }),
+        "{error:?}"
+    );
+
+    std::fs::remove_file(&source).ok();
+    std::fs::remove_file(&out).ok();
+}

@@ -69,6 +69,51 @@ impl Log {
         })
     }
 
+    /// Writes a whole log to a path that does not exist yet.
+    ///
+    /// Compaction is the only caller, and it refuses to write over an existing file: the original
+    /// log is the record of what happened, and a tool that overwrote it while compacting would
+    /// destroy the evidence it was asked to read. The refusal is `create_new`, so it holds against
+    /// two processes racing as well.
+    pub fn write_new(&self, events: &[Event]) -> Result<(), LogError> {
+        if let Some(parent) = self.path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|error| LogError::Io {
+                    path: self.path.display().to_string(),
+                    detail: error.to_string(),
+                })?;
+            }
+        }
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&self.path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    LogError::Exists {
+                        path: self.path.display().to_string(),
+                    }
+                } else {
+                    LogError::Io {
+                        path: self.path.display().to_string(),
+                        detail: error.to_string(),
+                    }
+                }
+            })?;
+        for event in events {
+            let line = serde_json::to_string(event)
+                .map_err(|error| LogError::Encode(error.to_string()))?;
+            writeln!(file, "{line}").map_err(|error| LogError::Io {
+                path: self.path.display().to_string(),
+                detail: error.to_string(),
+            })?;
+        }
+        file.sync_all().map_err(|error| LogError::Io {
+            path: self.path.display().to_string(),
+            detail: error.to_string(),
+        })
+    }
+
     /// Reads every event. A malformed or torn line is an error, with its line number.
     ///
     /// A log that does not exist yet is an **empty** log, not an error: the first command of a
@@ -119,6 +164,13 @@ pub enum LogError {
     },
     /// An event could not be encoded.
     Encode(String),
+    /// There is no snapshot to compact from.
+    NothingToCompact,
+    /// A file is already there, and this command does not overwrite a ledger.
+    Exists {
+        /// The path that is in the way.
+        path: String,
+    },
 }
 
 impl std::fmt::Display for LogError {
@@ -131,8 +183,40 @@ impl std::fmt::Display for LogError {
                  the transaction it was recording may already have been applied"
             ),
             Self::Encode(detail) => write!(f, "cannot encode the event: {detail}"),
+            Self::NothingToCompact => write!(
+                f,
+                "there is no snapshot in this log, so there is nothing to compact from: run \
+                 `ledgerlab snapshot --log <file>` first. Dropping the events without one would \
+                 drop the history they are"
+            ),
+            Self::Exists { path } => write!(
+                f,
+                "{path} already exists, and a ledger is not overwritten: choose another --out, or \
+                 remove the file yourself once you are sure"
+            ),
         }
     }
 }
 
 impl std::error::Error for LogError {}
+
+/// The events a compacted log carries: the newest snapshot, and everything after it.
+///
+/// This is the rule for what may be dropped, and it is the snapshot that makes it safe: a snapshot
+/// is sufficient to rebuild the state — `Ledger::replay` checks that every time it uses one — so the
+/// events it covers are redundant and the events after it are not. Without a snapshot there is
+/// nothing to compact from, and this refuses instead of writing a log that lost its history.
+///
+/// What it does **not** buy is a log that stops growing: the snapshot carries the accepted
+/// transactions, because idempotency is a promise about them and a log that cannot answer "was this
+/// one of them" charges twice. Compaction buys a shorter file to read and a replay that starts from
+/// a state instead of from the first event ever written.
+pub fn compact(events: &[Event]) -> Result<Vec<Event>, LogError> {
+    let Some(newest) = events
+        .iter()
+        .rposition(|event| matches!(event, Event::BalancesSnapshot { .. }))
+    else {
+        return Err(LogError::NothingToCompact);
+    };
+    Ok(events[newest..].to_vec())
+}

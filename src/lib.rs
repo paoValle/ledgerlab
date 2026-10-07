@@ -12,7 +12,7 @@
 //!    statement and the ledger disagree, with the reason.
 //!
 //! Every claim in the README is reproducible with one command, and the commands are
-//! `open`, `apply`, `balances`, `verify`, `reconcile`, `report`.
+//! `open`, `apply`, `balances`, `verify`, `reconcile`, `snapshot`, `compact`, `report`.
 
 pub mod audit;
 pub mod ledger;
@@ -22,6 +22,6 @@ pub mod reconcile;
 
 pub use audit::{audit, Audit, Violation, ViolationKind};
 pub use ledger::{Account, AccountKind, Applied, Event, Ledger, LedgerError, Posting, Transaction};
-pub use log::{Log, LogError};
+pub use log::{compact, Log, LogError};
 pub use money::{Amount, MoneyError};
 pub use reconcile::{reconcile, Divergence, Reconciliation, ReconciliationReason, StatementEntry};

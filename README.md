@@ -44,11 +44,30 @@ ledger stored conclusions instead of events.
   and no `delete`. Corrections are transactions, so history stays readable.
 - **Balances derived, not authoritative**: `Ledger::replay` rebuilds state from the log, and the
   audit recomputes the balances from the transactions and compares — two paths that must agree.
+- **A snapshot a replay can start from**: `snapshot` appends the whole state as one event, and a
+  replay that finds one adopts it instead of re-applying everything before it.
+- **Compaction that cannot lose the history**: `compact` writes a **new** file with the newest
+  snapshot and the events after it, and refuses to overwrite a log. What it drops is what the
+  snapshot already covers; the accepted transactions stay inside the snapshot, because idempotency is
+  a promise about them and a log that cannot answer "was this one of them" charges twice.
 - **Reconciliation with a reason**: each divergence is classified as an amount mismatch, an entry
   the ledger never saw, a pending entry, or an ordering problem, because collapsing those into one
   "delta" is how a timing difference gets escalated and a real one gets ignored.
 - **Exit codes a CI can gate on**: `0` agrees, `1` a divergence that means the ledger is wrong,
   `2` a usage or input error. A pending entry is reported and returns `0`.
+
+```console
+$ ledgerlab verify --log ledger.jsonl
+4 account(s), 4 transaction(s), sum of everything 0.000000, recomputed balances match: yes
+$ ledgerlab snapshot --log ledger.jsonl
+snapshot at sequence 4: 4 account(s), 4 transaction(s)
+$ ledgerlab compact --log ledger.jsonl --out ledger-compact.jsonl
+wrote ledger-compact.jsonl: 1 event(s) kept (the newest snapshot and the tail), 8 dropped
+$ ledgerlab verify --log ledger-compact.jsonl
+4 account(s), 4 transaction(s), sum of everything 0.000000, recomputed balances match: yes
+$ ledgerlab apply --log ledger-compact.jsonl --pending activity.jsonl     # the promise survives
+0 transaction(s) applied, 4 already applied (idempotent), 4 in the log
+```
 
 ```console
 $ ledgerlab apply --log ledger.jsonl --pending activity.jsonl
@@ -147,6 +166,11 @@ Not here, and not claimed:
 - **one writer.** The log is append-only and durable, but nothing prevents two processes from
   interleaving appends. A single writer is a requirement of this version, not a detail.
 - **no bank or PSP integration, no UI.** Statement files are files.
+- **compaction does not make the log stop growing.** The snapshot carries the accepted
+  transactions, because idempotency is a promise about them; what compaction buys is a shorter file
+  to read and a replay that starts from a state instead of from the first event ever written. Real
+  rotation (keeping a window of history and archiving the rest) is a different tool, and it would
+  have to say where the archived part went.
 
 ## What I would do differently
 
@@ -156,8 +180,9 @@ Not here, and not claimed:
 - `reconcile` matches references one-to-one. Real statements have splits and merges (one charge
   settled in two payouts, one payout for ten charges), and those need a matching step before the
   comparison, not inside it.
-- The log has no compaction and no rotation. A ledger with millions of events wants both, and the
-  honest version is a snapshot plus a tail — which is a second format to keep compatible.
+- Compaction exists now (`snapshot` plus `compact`), and rotation does not: the log still holds every
+  accepted transaction inside the snapshot, and a ledger with millions of events wants the archived
+  part kept somewhere with a pointer to it.
 
 ## Development
 

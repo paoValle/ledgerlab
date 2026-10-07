@@ -5,6 +5,19 @@ versioning [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-07
+
+### Added
+- `snapshot`: appends the whole state — the chart, the balances and the accepted transactions — as a
+  `balances.snapshot` event that a replay can start from.
+- `compact`: writes a new log with the newest snapshot and the events after it, refusing to overwrite
+  an existing file and refusing to run without a snapshot. The input log is never modified, and the
+  accepted transactions stay inside the snapshot so idempotency keeps holding after a compaction.
+- Replay **checks** a snapshot instead of believing it: the transactions are numbered without gaps,
+  each sums to zero and names accounts the snapshot opens, the idempotency keys are unique, and the
+  balances are recomputed from the transactions and compared. A snapshot that does not add up is
+  refused with `SnapshotInvalid`.
+
 ## [0.1.0] - 2026-10-05
 
 First version: a double-entry ledger that proves its invariants and says where it stopped agreeing
