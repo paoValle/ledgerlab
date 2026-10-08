@@ -23,10 +23,9 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use ledgerlab::reconcile::ReconciliationReason;
 use ledgerlab::{
     audit, compact, ledger::Event, reconcile, Account, Amount, Ledger, Log, Reconciliation,
-    StatementEntry, Transaction,
+    Settlement, StatementEntry, Transaction,
 };
 
 const USAGE: &str = "\
@@ -461,15 +460,7 @@ fn report(args: &Args) -> Result<ExitCode, String> {
 fn is_failing(result: &Reconciliation) -> bool {
     match &result.first_divergence {
         None => false,
-        Some(divergence) => match divergence.reason {
-            ReconciliationReason::AmountMismatch
-            | ReconciliationReason::MissingFromLedger
-            | ReconciliationReason::OutOfOrder => true,
-            ReconciliationReason::PendingInLedger => false,
-            ReconciliationReason::LengthMismatch => {
-                result.statement_entries > result.ledger_entries
-            }
-        },
+        Some(divergence) => divergence.reason.is_error(),
     }
 }
 
@@ -520,6 +511,26 @@ fn render_reconciliation(result: &Reconciliation, label: Option<&str>) -> String
             result.pending_in_ledger.join(", ")
         ));
     }
+    let grouped: Vec<&Settlement> = result
+        .settlements
+        .iter()
+        .filter(|settlement| {
+            settlement.statement_indexes.len() > 1 || settlement.ledger_indexes.len() > 1
+        })
+        .collect();
+    if !grouped.is_empty() {
+        out.push_str("\nMatched by total rather than one-to-one:\n");
+        for settlement in grouped {
+            out.push_str(&format!(
+                "- {}: ledger {} across {} entries, statement {} across {} entries\n",
+                settlement.reference,
+                settlement.ledger_total,
+                settlement.ledger_indexes.len(),
+                settlement.statement_total,
+                settlement.statement_indexes.len()
+            ));
+        }
+    }
     out
 }
 
@@ -535,6 +546,14 @@ fn reconciliation_json(result: &Reconciliation) -> serde_json::Value {
         "difference": result.final_difference().to_string(),
         "missing_from_ledger": result.missing_from_ledger,
         "pending_in_ledger": result.pending_in_ledger,
+        "settlements": result.settlements.iter().map(|settlement| serde_json::json!({
+            "reference": settlement.reference,
+            "ledger_entries": settlement.ledger_indexes.len(),
+            "statement_entries": settlement.statement_indexes.len(),
+            "ledger_total": settlement.ledger_total.to_string(),
+            "statement_total": settlement.statement_total.to_string(),
+            "settled": settlement.is_settled(),
+        })).collect::<Vec<_>>(),
         "first_divergence": result.first_divergence.as_ref().map(|divergence| serde_json::json!({
             "index": divergence.index,
             "reason": guard_format(format!("{:?}", divergence.reason)),

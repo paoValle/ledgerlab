@@ -17,7 +17,7 @@ Reconciliation of `assets:bank`
 | final balance, statement | 128.500000 |
 | difference | -0.450000 |
 
-**First divergence at entry 3** (amount mismatch): fee_1: the ledger booked -1.050000, the statement says -1.500000
+**First divergence at entry 3** (amount mismatch): fee_1: the ledger booked -1.050000 across 1 entry, the statement says -1.500000 across 1 entry
 
 The running balances before it: ledger 130.000000, statement 130.000000 (difference 0.000000).
 ```
@@ -50,9 +50,12 @@ ledger stored conclusions instead of events.
   snapshot and the events after it, and refuses to overwrite a log. What it drops is what the
   snapshot already covers; the accepted transactions stay inside the snapshot, because idempotency is
   a promise about them and a log that cannot answer "was this one of them" charges twice.
-- **Reconciliation with a reason**: each divergence is classified as an amount mismatch, an entry
-  the ledger never saw, a pending entry, or an ordering problem, because collapsing those into one
-  "delta" is how a timing difference gets escalated and a real one gets ignored.
+- **Reconciliation by reference, not by position**: everything the two sides carry under one
+  reference is matched as a total, so a charge settled in two payouts and a payout covering several
+  charges reconcile when they add up, and what is left over on each side is named. Each divergence
+  is classified as an amount mismatch, a reference the ledger never saw, or a pending one, because
+  collapsing those into one "delta" is how a timing difference gets escalated and a real one gets
+  ignored.
 - **Exit codes a CI can gate on**: `0` agrees, `1` a divergence that means the ledger is wrong,
   `2` a usage or input error. A pending entry is reported and returns `0`.
 
@@ -95,7 +98,7 @@ src/
   ledger.rs     accounts, transactions, double entry, idempotency, replay
   log.rs        append-only JSONL, fsync, torn-write detection
   audit.rs      the invariants, checked independently of the code that maintains them
-  reconcile.rs  comparison with a statement, and the first entry where they disagree
+  reconcile.rs  matching a statement's entries by reference, and the first disagreement
   main.rs       the six commands, and the exit codes
 ```
 
@@ -107,8 +110,8 @@ have been applied.
 
 ## The invariants are tested by generation, not only by example
 
-`cargo test` runs **13 tests**: five properties over generated books (`proptest`), five
-concrete cases, and three unit tests for the money type itself.
+`cargo test` runs **23 tests**: five properties over generated books (`proptest`), fourteen
+concrete cases, and four unit tests for the money type itself.
 
 | property | what it means |
 |---|---|
@@ -121,7 +124,9 @@ concrete cases, and three unit tests for the money type itself.
 The concrete cases are the ones a customer would ask about: an unbalanced transaction is refused
 and **nothing moves**; the same idempotency key with different content is a conflict, not a retry; an account
 below its declared minimum is refused; `0.1 + 0.2` is exactly `0.3` here, with the float version
-asserted to be inexact as the reason this type exists; and a torn write is detected by line number.
+asserted to be inexact as the reason this type exists; a torn write is detected by line number; a
+charge settled in two payouts, and a payout covering two charges, reconcile by total while a split
+that does not add up is an amount mismatch.
 
 ```bash
 make ci     # cargo fmt --check && cargo clippy -D warnings && cargo test
@@ -160,9 +165,11 @@ Not here, and not claimed:
   timestamp, not a number), and doing it badly would be worse than not doing it.
 - **not an accounting standard.** This is double entry with declared invariants, not GAAP or IFRS:
   no periods, no closing entries, no tax logic.
-- **the statement comparison is positional.** Both sequences are assumed to be in chronological
-  order, so a missing entry shifts the alignment — which is exactly why the report names the reason
-  instead of printing a number.
+- **matching is by reference, and the reference is the only key.** A charge and its payout are
+  matched by the reference both sides carry: there is no date or amount heuristic, so a processor
+  that changes the reference between the two, or two unrelated entries that share one, cannot be
+  told apart. The report names the reason and the leftovers instead of printing a number, which is
+  what keeps a wrong match visible.
 - **one writer.** The log is append-only and durable, but nothing prevents two processes from
   interleaving appends. A single writer is a requirement of this version, not a detail.
 - **no bank or PSP integration, no UI.** Statement files are files.
@@ -177,9 +184,10 @@ Not here, and not claimed:
 - Idempotency keys are matched on content, which catches a key reused with different money, but not
   a client that retries with a *semantically* different transaction under the same key. That is a
   protocol problem (what does a retry mean?), and it needs a written answer, not a smarter compare.
-- `reconcile` matches references one-to-one. Real statements have splits and merges (one charge
-  settled in two payouts, one payout for ten charges), and those need a matching step before the
-  comparison, not inside it.
+- `reconcile` matches by reference, and a date window is the next thing a real statement wants: a
+  processor that changes the reference between a charge and its payout is still unmatched, and
+  matching by amount within a day is the honest fallback, but it needs a written rule about which
+  side wins when two candidates are equally plausible.
 - Compaction exists now (`snapshot` plus `compact`), and rotation does not: the log still holds every
   accepted transaction inside the snapshot, and a ledger with millions of events wants the archived
   part kept somewhere with a pointer to it.
