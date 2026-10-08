@@ -5,6 +5,21 @@ versioning [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- `reconcile` matches a statement's entries to the ledger's **by reference**, not by position:
+  everything either side carries under one reference is compared as a total, so a charge settled in
+  two payouts (a split) and a payout covering several charges (a merge) reconcile when they add up.
+  `Reconciliation::settlements` says which entries each reference consumed and which were left over,
+  and `reconcile --json` exposes the same list.
+- `Reconciliation::matched` counts references settled on both sides, including ones that come after
+  the first divergence, instead of only the aligned prefix.
+- `Divergence::difference` is `statement_running - ledger_running` as documented. It had the sign
+  the other way round, invisible while every example's running difference was zero.
+
+### Removed
+- `ReconciliationReason::OutOfOrder` and `ReconciliationReason::LengthMismatch`: with matching by
+  reference, order and length are no longer reasons two sides disagree, the leftover references are.
+
 ## [0.1.1] - 2026-10-07
 
 ### Added

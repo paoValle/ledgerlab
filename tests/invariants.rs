@@ -228,6 +228,136 @@ proptest! {
     }
 }
 
+/// A charge settled in two payouts reconciles: a reference is matched by total, not by position.
+#[test]
+fn a_charge_settled_in_two_payouts_reconciles() {
+    let mut ledger = ledger();
+    apply_one(
+        &mut ledger,
+        "ch_1",
+        "revenue:subscriptions",
+        Amount::from_micros(100_000_000),
+    );
+
+    let statement = vec![
+        StatementEntry {
+            reference: "ch_1".to_owned(),
+            amount: Amount::from_micros(60_000_000),
+        },
+        StatementEntry {
+            reference: "ch_1".to_owned(),
+            amount: Amount::from_micros(40_000_000),
+        },
+    ];
+
+    let result = reconcile(&ledger, "assets:bank", &statement);
+
+    assert!(result.is_clean(), "{:?}", result.first_divergence);
+    assert_eq!(result.matched, 1);
+    assert_eq!(result.ledger_entries, 1);
+    assert_eq!(result.statement_entries, 2);
+    let settlement = &result.settlements[0];
+    assert_eq!(settlement.ledger_indexes, vec![0]);
+    assert_eq!(settlement.statement_indexes, vec![0, 1]);
+    assert!(settlement.is_settled());
+    assert!(result.final_difference().is_zero());
+}
+
+/// A payout covering two charges reconciles the other way round.
+#[test]
+fn a_payout_covering_two_charges_reconciles() {
+    let mut ledger = ledger();
+    apply_one(
+        &mut ledger,
+        "po_1",
+        "revenue:subscriptions",
+        Amount::from_micros(60_000_000),
+    );
+    apply_one(
+        &mut ledger,
+        "po_1",
+        "revenue:subscriptions",
+        Amount::from_micros(40_000_000),
+    );
+
+    let statement = vec![StatementEntry {
+        reference: "po_1".to_owned(),
+        amount: Amount::from_micros(100_000_000),
+    }];
+
+    let result = reconcile(&ledger, "assets:bank", &statement);
+
+    assert!(result.is_clean(), "{:?}", result.first_divergence);
+    assert_eq!(result.matched, 1);
+    assert_eq!(result.ledger_entries, 2);
+    assert_eq!(result.statement_entries, 1);
+    assert_eq!(result.settlements[0].ledger_indexes, vec![0, 1]);
+    assert_eq!(result.settlements[0].statement_indexes, vec![0]);
+}
+
+/// Several entries under one reference that do not add up are an amount mismatch, not a shape.
+#[test]
+fn a_split_that_does_not_add_up_is_an_amount_mismatch() {
+    let mut ledger = ledger();
+    apply_one(
+        &mut ledger,
+        "ch_2",
+        "revenue:subscriptions",
+        Amount::from_micros(100_000_000),
+    );
+
+    let statement = vec![
+        StatementEntry {
+            reference: "ch_2".to_owned(),
+            amount: Amount::from_micros(60_000_000),
+        },
+        StatementEntry {
+            reference: "ch_2".to_owned(),
+            amount: Amount::from_micros(30_000_000),
+        },
+    ];
+
+    let result = reconcile(&ledger, "assets:bank", &statement);
+
+    let divergence = result
+        .first_divergence
+        .expect("90.00 does not add up to 100.00");
+    assert_eq!(
+        divergence.reason,
+        ledgerlab::ReconciliationReason::AmountMismatch
+    );
+    assert_eq!(divergence.ledger_reference.as_deref(), Some("ch_2"));
+    assert!(
+        divergence.detail.contains("across 2 entries"),
+        "{}",
+        divergence.detail
+    );
+}
+
+/// Applies one bank inflow of `amount` under `reference` against `counterpart`.
+fn apply_one(ledger: &mut Ledger, reference: &str, counterpart: &str, amount: Amount) {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    ledger
+        .apply(Transaction {
+            id: format!("tx-{reference}-{sequence}"),
+            idempotency_key: format!("key-{reference}-{sequence}"),
+            reference: Some(reference.to_owned()),
+            memo: None,
+            postings: vec![
+                Posting {
+                    account: "assets:bank".to_owned(),
+                    amount,
+                },
+                Posting {
+                    account: counterpart.to_owned(),
+                    amount: amount.negated(),
+                },
+            ],
+        })
+        .expect("the chart allows an inflow on the bank");
+}
+
 #[test]
 fn an_unbalanced_transaction_is_refused_and_nothing_moves() {
     let mut ledger = ledger();

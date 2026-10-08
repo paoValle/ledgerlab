@@ -47,7 +47,7 @@ Checked by recomputing the balances from the accepted transactions, independentl
 | final balance, statement | 128.500000 |
 | difference | -0.450000 |
 
-**First divergence at entry 3** (amount mismatch): fee_1: the ledger booked -1.050000, the statement says -1.500000
+**First divergence at entry 3** (amount mismatch): fee_1: the ledger booked -1.050000 across 1 entry, the statement says -1.500000 across 1 entry
 
 The running balances before it: ledger 130.000000, statement 130.000000 (difference 0.000000).
 
@@ -57,12 +57,12 @@ The running balances before it: ledger 130.000000, statement 130.000000 (differe
 |---|---|
 | entries in the ledger | 4 |
 | entries in the statement | 3 |
-| references matched | 2 |
+| references matched | 3 |
 | final balance, ledger | 128.950000 |
 | final balance, statement | 148.950000 |
 | difference | 20.000000 |
 
-**First divergence at entry 2** (in the ledger, not in the statement (pending)): at entry 2 the statement has "fee_1" (-1.050000) where the ledger has "re_1" (-20.000000)
+**First divergence at entry 2** (in the ledger, not in the statement (pending)): re_1: in the ledger (-20.000000), not in the statement
 
 The running balances before it: ledger 150.000000, statement 150.000000 (difference 0.000000).
 

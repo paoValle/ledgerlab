@@ -8,8 +8,8 @@
 //! 2. **the log is the truth**: append-only, durable on write, and balances are a cache rebuilt
 //!    from it. Replay is not a debugging feature, it is how the state exists ([`ledger`], [`log`]);
 //! 3. **correctness is checked, not asserted**: [`audit`] recomputes the balances from the
-//!    transactions and compares, and [`reconcile`] reports the first entry where an external
-//!    statement and the ledger disagree, with the reason.
+//!    transactions and compares, and [`reconcile`] matches an external statement by reference and
+//!    reports the first one where the two sides disagree, with the reason.
 //!
 //! Every claim in the README is reproducible with one command, and the commands are
 //! `open`, `apply`, `balances`, `verify`, `reconcile`, `snapshot`, `compact`, `report`.
@@ -24,4 +24,6 @@ pub use audit::{audit, Audit, Violation, ViolationKind};
 pub use ledger::{Account, AccountKind, Applied, Event, Ledger, LedgerError, Posting, Transaction};
 pub use log::{compact, Log, LogError};
 pub use money::{Amount, MoneyError};
-pub use reconcile::{reconcile, Divergence, Reconciliation, ReconciliationReason, StatementEntry};
+pub use reconcile::{
+    reconcile, Divergence, Reconciliation, ReconciliationReason, Settlement, StatementEntry,
+};
