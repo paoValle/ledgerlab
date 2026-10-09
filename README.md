@@ -57,7 +57,9 @@ ledger stored conclusions instead of events.
   collapsing those into one "delta" is how a timing difference gets escalated and a real one gets
   ignored.
 - **Exit codes a CI can gate on**: `0` agrees, `1` a divergence that means the ledger is wrong,
-  `2` a usage or input error. A pending entry is reported and returns `0`.
+  `2` a usage or input error. A pending entry is reported and returns `0`. `tests/cli.rs` runs the
+  binary and asserts each one, because a `1` that quietly became a `0` would turn a red
+  reconciliation green.
 
 ```console
 $ ledgerlab verify --log ledger.jsonl
@@ -110,8 +112,9 @@ have been applied.
 
 ## The invariants are tested by generation, not only by example
 
-`cargo test` runs **23 tests**: five properties over generated books (`proptest`), fourteen
-concrete cases, and four unit tests for the money type itself.
+`cargo test` runs **25 tests**: five properties over generated books (`proptest`), fourteen
+concrete cases, four unit tests for the money type itself, and two that run the binary and pin the
+exit codes a CI gates on.
 
 | property | what it means |
 |---|---|
