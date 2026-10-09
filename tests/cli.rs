@@ -1,4 +1,4 @@
-//! The exit codes, which are the contract a CI gates on.
+//! The command-line contract: the exit codes, and what the two input formats accept.
 //!
 //! The other suite is library-level: it never spawns a process, so nothing asserted what `main`
 //! returns. A `1` that became a `0` would turn a red reconciliation green and no test would
@@ -109,4 +109,65 @@ fn a_usage_error_is_exit_2_and_a_clean_ledger_verifies_with_0() {
         2,
         "no command at all prints the usage and exits 2"
     );
+}
+
+/// The README's two input formats: "Input files (charts, transactions, statements) are JSONL and
+/// may contain `#` comments … The **event log** is stricter — it is written by this program, so a
+/// line that does not parse there is damage, not a comment. A torn write is reported with its line
+/// number and never skipped."
+#[test]
+fn input_files_take_a_comment_and_the_event_log_treats_one_as_damage() {
+    let path = temp_path("comments");
+    let log = path.to_str().expect("the temp path is utf-8");
+    let activity = std::fs::read_to_string("examples/activity.jsonl").expect("read the fixture");
+    let commented = temp_path("commented-activity");
+    std::fs::write(
+        &commented,
+        format!("# a comment the input format allows\n\n{activity}"),
+    )
+    .expect("write the commented activity file");
+
+    let opened = ledgerlab(&["open", "--log", log, "--accounts", "examples/chart.jsonl"]);
+    assert!(opened.status.success(), "open: {opened:?}");
+    let applied = ledgerlab(&[
+        "apply",
+        "--log",
+        log,
+        "--pending",
+        commented.to_str().expect("the temp path is utf-8"),
+    ]);
+    assert!(
+        applied.status.success(),
+        "a comment must not stop an input file: {applied:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&applied.stdout).contains("4 transaction(s) applied"),
+        "and the transactions after it are the ones applied: {}",
+        String::from_utf8_lossy(&applied.stdout)
+    );
+
+    // The same line in the log is damage, and it is reported where it is.
+    let events = std::fs::read_to_string(&path)
+        .expect("read the log")
+        .lines()
+        .count();
+    let mut contents = std::fs::read_to_string(&path).expect("read the log");
+    contents.push_str("# not a comment here\n");
+    std::fs::write(&path, contents).expect("append the comment line");
+
+    let verified = ledgerlab(&["verify", "--log", log]);
+    assert_eq!(
+        code(&verified),
+        2,
+        "a torn write is an input error, not a divergence: {verified:?}"
+    );
+    let stderr = String::from_utf8_lossy(&verified.stderr);
+    assert!(
+        stderr.contains(&format!("line {}", events + 1)),
+        "the line number is what makes it findable: {stderr}"
+    );
+    assert!(stderr.contains("A torn write is not skipped"), "{stderr}");
+
+    std::fs::remove_file(&path).ok();
+    std::fs::remove_file(&commented).ok();
 }
