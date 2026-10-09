@@ -112,9 +112,10 @@ have been applied.
 
 ## The invariants are tested by generation, not only by example
 
-`cargo test` runs **25 tests**: five properties over generated books (`proptest`), fourteen
-concrete cases, four unit tests for the money type itself, and two that run the binary and pin the
-exit codes a CI gates on.
+`cargo test` runs **26 tests**: five properties over generated books (`proptest`), fourteen
+concrete cases, four unit tests for the money type itself, and three that run the binary: the two
+exit codes above, and the two input formats (a `#` comment is a comment in an input file and damage
+in the event log).
 
 | property | what it means |
 |---|---|
