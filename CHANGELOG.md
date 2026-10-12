@@ -5,6 +5,12 @@ versioning [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `Settlement::reason`: why a reference does not settle, or `None` when it does. One classification
+  where the report, the `--json` consumer and the exit code each used to derive their own.
+- `Reconciliation::is_failing`: whether **any** divergence means the ledger is wrong, rather than
+  only the first one.
+
 ### Changed
 - `reconcile` matches a statement's entries to the ledger's **by reference**, not by position:
   everything either side carries under one reference is compared as a total, so a charge settled in
@@ -19,6 +25,15 @@ versioning [SemVer](https://semver.org/).
 ### Removed
 - `ReconciliationReason::OutOfOrder` and `ReconciliationReason::LengthMismatch`: with matching by
   reference, order and length are no longer reasons two sides disagree, the leftover references are.
+
+### Fixed
+- `reconcile` (and `report`) exit **1** for a reference the statement carries and the ledger has
+  never seen, wherever it sits. The exit code was gated on the *first* divergence, and the walk is
+  the ledger's order — so a pending reference, which is the normal state of a partial statement,
+  came first and turned a phantom bank entry into exit `0`. An error is now an error anywhere: a
+  settled reference carries no reason, a pending one never fails a build, and a missing one always
+  does. `reconcile --json` still names only the first divergence's reason, so a consumer gating on
+  that field alone sees the answer the exit code no longer gives.
 
 ## [0.1.1] - 2026-10-07
 

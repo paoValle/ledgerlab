@@ -1,0 +1,11 @@
+# A statement the ledger does not agree with, in the way that costs money.
+#
+# Two things at once, because that is the shape that made the tool lie: `ch_1` is settled, and
+# `ghost_9` is money the bank moved and this ledger has never heard of. Everything else in the
+# ledger is still in flight — `ch_2`, the refund and the fee are all pending.
+#
+# The pending entries are what matter. The walk is the ledger's order, so a pending reference comes
+# before one the ledger never saw, and gating the exit code on the *first* divergence alone made
+# this statement exit 0: a difference only a CI is supposed to catch, reported as agreement.
+{"reference":"ch_1","amount":"100.000000"}
+{"reference":"ghost_9","amount":"-99.000000"}

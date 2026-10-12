@@ -84,6 +84,24 @@ fn the_reconciliation_exit_codes_are_the_ones_the_readme_documents() {
         String::from_utf8_lossy(&pending.stdout)
     );
 
+    // The one that used to be green: a reference the ledger never saw, with something else still
+    // pending in front of it. The walk is the ledger's order, so the pending reference is the
+    // first divergence — and gating the exit code on the first one alone made the phantom entry
+    // exit 0, which is the difference a CI is supposed to catch reported as agreement.
+    let phantom = reconcile("examples/statement-phantom.jsonl");
+    assert_eq!(
+        code(&phantom),
+        1,
+        "money the bank moved and this ledger never saw is exit 1, \
+         however much of the ledger is still pending: {}",
+        String::from_utf8_lossy(&phantom.stdout)
+    );
+    let printed = String::from_utf8_lossy(&phantom.stdout);
+    assert!(
+        printed.contains("ghost_9"),
+        "and the report names it: {printed}"
+    );
+
     std::fs::remove_file(&path).ok();
 }
 
