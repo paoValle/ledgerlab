@@ -334,6 +334,119 @@ fn a_split_that_does_not_add_up_is_an_amount_mismatch() {
     );
 }
 
+/// A reference the ledger never saw is an error, and it does not stop being one because something
+/// else is still pending.
+///
+/// The walk is the ledger's order, so a pending reference always comes before one the statement
+/// has and the ledger does not. Gating the exit code on the first divergence alone therefore made
+/// a phantom bank entry exit `0` for as long as anything else in the ledger was outstanding — the
+/// normal state of a partial statement, and exactly the difference a CI is supposed to catch.
+#[test]
+fn a_reference_the_ledger_never_saw_fails_even_when_something_is_pending() {
+    let mut ledger = ledger();
+    apply_one(
+        &mut ledger,
+        "ch_1",
+        "revenue:subscriptions",
+        Amount::from_micros(100_000_000),
+    );
+    // the refund: in the ledger, not in the statement, so it is pending rather than wrong
+    apply_one(
+        &mut ledger,
+        "re_1",
+        "revenue:subscriptions",
+        Amount::from_micros(-20_000_000),
+    );
+
+    let statement = vec![
+        StatementEntry {
+            reference: "ch_1".to_owned(),
+            amount: Amount::from_micros(100_000_000),
+        },
+        StatementEntry {
+            reference: "ghost_9".to_owned(),
+            amount: Amount::from_micros(-99_000_000),
+        },
+    ];
+
+    let result = reconcile(&ledger, "assets:bank", &statement);
+
+    // the pending reference is still where they *started* to disagree, and it is not the error
+    let divergence = result
+        .first_divergence
+        .as_ref()
+        .expect("the refund has not cleared, so they do diverge");
+    assert_eq!(
+        divergence.reason,
+        ledgerlab::ReconciliationReason::PendingInLedger
+    );
+    assert_eq!(divergence.ledger_reference.as_deref(), Some("re_1"));
+
+    // but the phantom entry is money, so the reconciliation fails wherever it sits
+    assert!(result.is_failing());
+    let phantom = result
+        .settlements
+        .iter()
+        .find(|settlement| settlement.reference == "ghost_9")
+        .expect("a reference the statement carries is settled or diverges");
+    assert_eq!(
+        phantom.reason(),
+        Some(ledgerlab::ReconciliationReason::MissingFromLedger)
+    );
+    assert!(
+        phantom.statement_indexes.len() == 1 && phantom.ledger_indexes.is_empty(),
+        "the bank has it and this ledger does not"
+    );
+
+    // and a pending reference on its own is still not a failure
+    let settled_prefix = vec![StatementEntry {
+        reference: "ch_1".to_owned(),
+        amount: Amount::from_micros(100_000_000),
+    }];
+    let behind = reconcile(&ledger, "assets:bank", &settled_prefix);
+    let behind_divergence = behind
+        .first_divergence
+        .as_ref()
+        .expect("the refund is outstanding");
+    assert_eq!(
+        behind_divergence.reason,
+        ledgerlab::ReconciliationReason::PendingInLedger
+    );
+    assert!(
+        !behind.is_failing(),
+        "a timing difference must not fail a build"
+    );
+}
+
+/// A settled reference carries no reason, so reading one as an error is impossible.
+///
+/// The reason is derived from the shape and not from the totals, which is what makes it the wrong
+/// thing to read for a reference that adds up: both sides have it, and it is not a divergence.
+#[test]
+fn a_settled_reference_has_no_reason_and_so_cannot_fail() {
+    let mut ledger = ledger();
+    apply_one(
+        &mut ledger,
+        "ch_1",
+        "revenue:subscriptions",
+        Amount::from_micros(100_000_000),
+    );
+
+    let statement = vec![StatementEntry {
+        reference: "ch_1".to_owned(),
+        amount: Amount::from_micros(100_000_000),
+    }];
+
+    let result = reconcile(&ledger, "assets:bank", &statement);
+
+    assert!(result.is_clean());
+    assert!(!result.is_failing());
+    for settlement in &result.settlements {
+        assert!(settlement.is_settled());
+        assert_eq!(settlement.reason(), None);
+    }
+}
+
 /// Applies one bank inflow of `amount` under `reference` against `counterpart`.
 fn apply_one(ledger: &mut Ledger, reference: &str, counterpart: &str, amount: Amount) {
     static NEXT: AtomicUsize = AtomicUsize::new(0);

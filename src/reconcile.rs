@@ -90,6 +90,27 @@ impl Settlement {
             && !self.statement_indexes.is_empty()
             && self.ledger_total == self.statement_total
     }
+
+    /// Why this reference does not settle, or `None` when it does.
+    ///
+    /// The same classification the report's first divergence and the exit code read, so a reason
+    /// that drifted into a pending entry could not make a red reconciliation green.
+    #[must_use]
+    pub fn reason(&self) -> Option<ReconciliationReason> {
+        if self.is_settled() {
+            return None;
+        }
+        Some(
+            match (
+                self.ledger_indexes.is_empty(),
+                self.statement_indexes.is_empty(),
+            ) {
+                (false, false) => ReconciliationReason::AmountMismatch,
+                (false, true) => ReconciliationReason::PendingInLedger,
+                _ => ReconciliationReason::MissingFromLedger,
+            },
+        )
+    }
 }
 
 /// One reference in the order the two sides are walked: its positions on each side, where it has
@@ -151,6 +172,23 @@ impl Reconciliation {
     #[must_use]
     pub fn is_clean(&self) -> bool {
         self.first_divergence.is_none()
+    }
+
+    /// Whether any divergence means the ledger is wrong, rather than merely behind.
+    ///
+    /// What the `reconcile` exit code gates on, and it looks at **every** unsettled reference, not
+    /// only the first one. The walk is the ledger's order, so a reference the statement does not
+    /// have yet always comes before a reference the ledger never saw: gating on the first
+    /// divergence alone made a phantom bank entry exit `0` for as long as anything else in the
+    /// ledger was still pending. That is the normal state of a partial statement, and it is
+    /// exactly the difference a CI is supposed to catch.
+    #[must_use]
+    pub fn is_failing(&self) -> bool {
+        self.settlements.iter().any(|settlement| {
+            settlement
+                .reason()
+                .is_some_and(ReconciliationReason::is_error)
+        })
     }
 
     /// The raw difference at the end, whatever the reason.
@@ -312,36 +350,33 @@ pub fn reconcile(ledger: &Ledger, account: &str, statement: &[StatementEntry]) -
         }
 
         if first_divergence.is_none() {
-            let reason = match (ledger_indexes, statement_indexes) {
-                (Some(_), Some(_)) => ReconciliationReason::AmountMismatch,
-                (Some(_), None) => ReconciliationReason::PendingInLedger,
-                _ => ReconciliationReason::MissingFromLedger,
-            };
-            let detail = match (ledger_indexes, statement_indexes) {
-                (Some(ledger_indexes), Some(statement_indexes)) => format!(
-                    "{reference}: the ledger booked {ledger_total} across {}, the statement says {statement_total} across {}",
-                    entries(ledger_indexes.len()),
-                    entries(statement_indexes.len())
-                ),
-                (Some(_), None) => {
-                    format!("{reference}: in the ledger ({ledger_total}), not in the statement")
-                }
-                _ => format!(
-                    "{reference}: in the statement ({statement_total}), not in the ledger"
-                ),
-            };
-            first_divergence = Some(Divergence {
-                index,
-                reason,
-                ledger_reference: ledger_indexes.as_ref().map(|_| reference.clone()),
-                statement_reference: statement_indexes.as_ref().map(|_| reference.clone()),
-                ledger_running,
-                statement_running,
-                difference: statement_running
-                    .checked_add(ledger_running.negated())
-                    .unwrap_or(Amount::ZERO),
-                detail,
-            });
+            if let Some(reason) = settlement.reason() {
+                let detail = match (ledger_indexes, statement_indexes) {
+                    (Some(ledger_indexes), Some(statement_indexes)) => format!(
+                        "{reference}: the ledger booked {ledger_total} across {}, the statement says {statement_total} across {}",
+                        entries(ledger_indexes.len()),
+                        entries(statement_indexes.len())
+                    ),
+                    (Some(_), None) => {
+                        format!("{reference}: in the ledger ({ledger_total}), not in the statement")
+                    }
+                    _ => format!(
+                        "{reference}: in the statement ({statement_total}), not in the ledger"
+                    ),
+                };
+                first_divergence = Some(Divergence {
+                    index,
+                    reason,
+                    ledger_reference: ledger_indexes.as_ref().map(|_| reference.clone()),
+                    statement_reference: statement_indexes.as_ref().map(|_| reference.clone()),
+                    ledger_running,
+                    statement_running,
+                    difference: statement_running
+                        .checked_add(ledger_running.negated())
+                        .unwrap_or(Amount::ZERO),
+                    detail,
+                });
+            }
         }
         settlements.push(settlement);
     }

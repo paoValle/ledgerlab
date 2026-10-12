@@ -57,9 +57,10 @@ ledger stored conclusions instead of events.
   collapsing those into one "delta" is how a timing difference gets escalated and a real one gets
   ignored.
 - **Exit codes a CI can gate on**: `0` agrees, `1` a divergence that means the ledger is wrong,
-  `2` a usage or input error. A pending entry is reported and returns `0`. `tests/cli.rs` runs the
-  binary and asserts each one, because a `1` that quietly became a `0` would turn a red
-  reconciliation green.
+  `2` a usage or input error. A pending entry is reported and returns `0`; an error is an error
+  wherever it sits, so a reference the ledger never saw fails the run even when the rest of the
+  ledger is still in flight. `tests/cli.rs` runs the binary and asserts each one, because a `1`
+  that quietly became a `0` would turn a red reconciliation green.
 
 ```console
 $ ledgerlab verify --log ledger.jsonl
@@ -112,8 +113,8 @@ have been applied.
 
 ## The invariants are tested by generation, not only by example
 
-`cargo test` runs **26 tests**: five properties over generated books (`proptest`), fourteen
-concrete cases, four unit tests for the money type itself, and three that run the binary: the two
+`cargo test` runs **28 tests**: five properties over generated books (`proptest`), sixteen
+concrete cases, four unit tests for the money type itself, and three that run the binary: the
 exit codes above, and the two input formats (a `#` comment is a comment in an input file and damage
 in the event log).
 
@@ -130,7 +131,9 @@ and **nothing moves**; the same idempotency key with different content is a conf
 below its declared minimum is refused; `0.1 + 0.2` is exactly `0.3` here, with the float version
 asserted to be inexact as the reason this type exists; a torn write is detected by line number; a
 charge settled in two payouts, and a payout covering two charges, reconcile by total while a split
-that does not add up is an amount mismatch.
+that does not add up is an amount mismatch; and a reference the ledger never saw fails the run
+even when something else is still pending, while a settled reference carries no reason at all and
+so cannot.
 
 ```bash
 make ci     # cargo fmt --check && cargo clippy -D warnings && cargo test
@@ -157,8 +160,10 @@ ledgerlab report    --log <file> --account <id> --statement <label=file>... [--o
 
 The fixtures tell one small story: a SaaS whose bank account receives two subscriptions, refunds
 one, and pays a processor fee. Four transactions, four referenced entries, `assets:bank` ending at
-`128.950000` — and three statements: one that agrees, one where the bank charged 1.50 in fees while
-the ledger booked 1.05, and one where the refund has not cleared yet. The committed
+`128.950000` — and four statements: one that agrees, one where the bank charged 1.50 in fees while
+the ledger booked 1.05, one where the refund has not cleared yet, and one that carries an entry this
+ledger has never seen while the rest of it is still in flight. `make report` runs the first three;
+the fourth is the one that used to reconcile green. The committed
 [`reports/latest.md`](reports/latest.md) is the output of exactly that run.
 
 ## Scope, declared

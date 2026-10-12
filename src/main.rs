@@ -458,10 +458,7 @@ fn report(args: &Args) -> Result<ExitCode, String> {
 /// A pending entry is a timing difference and must not fail a build; a missing entry or a wrong
 /// amount is money, and does.
 fn is_failing(result: &Reconciliation) -> bool {
-    match &result.first_divergence {
-        None => false,
-        Some(divergence) => divergence.reason.is_error(),
-    }
+    result.is_failing()
 }
 
 fn render_reconciliation(result: &Reconciliation, label: Option<&str>) -> String {
