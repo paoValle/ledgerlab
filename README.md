@@ -59,7 +59,9 @@ ledger stored conclusions instead of events.
 - **Exit codes a CI can gate on**: `0` agrees, `1` a divergence that means the ledger is wrong,
   `2` a usage or input error. A pending entry is reported and returns `0`; an error is an error
   wherever it sits, so a reference the ledger never saw fails the run even when the rest of the
-  ledger is still in flight. `tests/cli.rs` runs the binary and asserts each one, because a `1`
+  ledger is still in flight. `--json` carries the same verdict in `failing` (`true` exactly when the
+  command exits `1`), because `clean` means *no divergence at all* and is also `false` for a pending
+  entry that returns `0`. `tests/cli.rs` runs the binary and asserts each one, because a `1`
   that quietly became a `0` would turn a red reconciliation green.
 
 ```console
@@ -113,10 +115,10 @@ have been applied.
 
 ## The invariants are tested by generation, not only by example
 
-`cargo test` runs **28 tests**: five properties over generated books (`proptest`), sixteen
-concrete cases, four unit tests for the money type itself, and three that run the binary: the
-exit codes above, and the two input formats (a `#` comment is a comment in an input file and damage
-in the event log).
+`cargo test` runs **29 tests**: five properties over generated books (`proptest`), sixteen
+concrete cases, four unit tests for the money type itself, and four that run the binary: the
+exit codes above, the two input formats (a `#` comment is a comment in an input file and damage
+in the event log), and the JSON verdict.
 
 | property | what it means |
 |---|---|
