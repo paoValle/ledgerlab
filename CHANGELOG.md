@@ -10,6 +10,9 @@ versioning [SemVer](https://semver.org/).
   where the report, the `--json` consumer and the exit code each used to derive their own.
 - `Reconciliation::is_failing`: whether **any** divergence means the ledger is wrong, rather than
   only the first one.
+- `reconcile --json` exposes `failing`, the verdict the exit code gates on. `clean` is `false` for a
+  pending entry too — the one the report calls a timing difference and returns `0` for — so a machine
+  consumer had no field that meant what exit `1` means.
 
 ### Changed
 - `reconcile` matches a statement's entries to the ledger's **by reference**, not by position:

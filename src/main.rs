@@ -538,6 +538,7 @@ fn reconciliation_json(result: &Reconciliation) -> serde_json::Value {
         "statement_entries": result.statement_entries,
         "matched": result.matched,
         "clean": result.is_clean(),
+        "failing": result.is_failing(),
         "ledger_final": result.ledger_final.to_string(),
         "statement_final": result.statement_final.to_string(),
         "difference": result.final_difference().to_string(),

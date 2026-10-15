@@ -105,6 +105,48 @@ fn the_reconciliation_exit_codes_are_the_ones_the_readme_documents() {
     std::fs::remove_file(&path).ok();
 }
 
+/// The machine interface carries the same verdict as the exit code.
+///
+/// `clean` is `first_divergence.is_none()`, so it is `false` for a pending entry — the statement the
+/// README says is *reported and returns `0`*. A consumer gating on it would fail the statement the
+/// human report calls a timing difference; `failing` is the field that means what exit `1` means.
+#[test]
+fn the_json_verdict_is_the_exit_code() {
+    let path = demo_log("json-verdict");
+    let log = path.to_str().expect("the temp path is utf-8");
+    let case = |statement: &str| {
+        let output = ledgerlab(&[
+            "reconcile",
+            "--log",
+            log,
+            "--account",
+            "assets:bank",
+            "--statement",
+            statement,
+            "--json",
+        ]);
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("the output is JSON");
+        let failing = json["failing"].as_bool().expect("failing is a boolean");
+        (code(&output), failing)
+    };
+
+    assert_eq!(case("examples/statement-clean.jsonl"), (0, false));
+    assert_eq!(
+        case("examples/statement-pending.jsonl"),
+        (0, false),
+        "a timing difference exits 0 and must not read as failing"
+    );
+    assert_eq!(case("examples/statement-divergent.jsonl"), (1, true));
+    assert_eq!(
+        case("examples/statement-phantom.jsonl"),
+        (1, true),
+        "a reference the ledger never saw fails wherever it sits"
+    );
+
+    std::fs::remove_file(&path).ok();
+}
+
 #[test]
 fn a_usage_error_is_exit_2_and_a_clean_ledger_verifies_with_0() {
     let path = demo_log("usage");
