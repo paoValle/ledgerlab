@@ -1,10 +1,12 @@
-//! The command line: six commands, and exit codes a CI can gate on.
+//! The command line: eight commands, and exit codes a CI can gate on.
 //!
 //! ```console
 //! ledgerlab open      --log ledger.jsonl --accounts chart.jsonl
 //! ledgerlab apply     --log ledger.jsonl --pending activity.jsonl
 //! ledgerlab balances  --log ledger.jsonl
 //! ledgerlab verify    --log ledger.jsonl
+//! ledgerlab snapshot  --log ledger.jsonl
+//! ledgerlab compact   --log ledger.jsonl --out ledger-compact.jsonl
 //! ledgerlab reconcile --log ledger.jsonl --account assets:bank --statement bank.jsonl
 //! ledgerlab report    --log ledger.jsonl --account assets:bank --statement clean=x.jsonl \
 //!                     --statement divergent=y.jsonl --out reports/latest.md
@@ -24,7 +26,7 @@ use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use ledgerlab::{
-    audit, compact, ledger::Event, reconcile, Account, Amount, Ledger, Log, Reconciliation,
+    audit, compact, ledger::Event, reconcile, Account, Amount, Audit, Ledger, Log, Reconciliation,
     Settlement, StatementEntry, Transaction,
 };
 
@@ -36,11 +38,27 @@ ledgerlab — a double-entry ledger that proves its invariants
   balances  --log <file> [--json]
   verify    --log <file> [--json]
   reconcile --log <file> --account <id> --statement <statement.jsonl> [--json]
-  snapshot  --log <file> --out <file>  write the state as a snapshot, for a replay to start from
-  compact   --log <file> --out <file>  the newest snapshot and the events after it, nothing else
+  snapshot  --log <file> [--json]      append the state as a snapshot, for a replay to start from
+  compact   --log <file> --out <file> [--json]  the newest snapshot and the events after it, nothing else
   report    --log <file> --account <id> --statement <label=file>... [--out reports/latest.md]
 
 Exit codes: 0 ok, 1 an invariant failed or a statement diverged, 2 usage or input error.";
+
+/// The flags each command reads.
+///
+/// A flag a command does not know is a usage error, not silence: `snapshot --log l --out
+/// backup.jsonl` used to exit `0`, print a snapshot and write nothing, which is how somebody
+/// learns their backup went to the wrong place.
+const FLAGS: &[(&str, &[&str])] = &[
+    ("open", &["log", "accounts"]),
+    ("apply", &["log", "pending"]),
+    ("balances", &["log", "json"]),
+    ("verify", &["log", "json"]),
+    ("snapshot", &["log", "json"]),
+    ("compact", &["log", "out", "json"]),
+    ("reconcile", &["log", "account", "statement", "json"]),
+    ("report", &["log", "account", "statement", "out"]),
+];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -120,6 +138,19 @@ fn run(raw: &[String]) -> Result<ExitCode, String> {
     if args.command.is_empty() || args.command == "help" {
         println!("{USAGE}");
         return Ok(ExitCode::from(if args.command.is_empty() { 2 } else { 0 }));
+    }
+
+    if let Some((_, allowed)) = FLAGS.iter().find(|(name, _)| *name == args.command) {
+        if let Some(unknown) = args
+            .flags
+            .keys()
+            .find(|key| !allowed.contains(&key.as_str()))
+        {
+            return Err(format!(
+                "--{unknown} is not a flag of `{}`\n\n{USAGE}",
+                args.command
+            ));
+        }
     }
 
     match args.command.as_str() {
@@ -228,7 +259,6 @@ fn balances(args: &Args) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Audits the ledger.
 /// Writes the current state as a snapshot, appended to the log.
 ///
 /// It is appended and not written in place, like everything else: the log stays append-only, and a
@@ -291,21 +321,16 @@ fn compact_command(args: &Args) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Audits the ledger.
 fn verify(args: &Args) -> Result<ExitCode, String> {
     let ledger = load(&Log::new(args.required("log")?))?;
     let report = audit(&ledger);
 
     if args.is_set("json") {
-        let value = serde_json::json!({
-            "accounts": report.accounts,
-            "transactions": report.transactions,
-            "global_sum": report.global_sum.to_string(),
-            "recomputed_matches": report.recomputed_matches,
-            "violations": report.violations.iter().map(|v| format!("{:?}: {}", v.kind, v.detail)).collect::<Vec<_>>(),
-        });
         println!(
             "{}",
-            serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?
+            serde_json::to_string_pretty(&verify_json(&report))
+                .map_err(|error| error.to_string())?
         );
     } else {
         println!(
@@ -327,6 +352,21 @@ fn verify(args: &Args) -> Result<ExitCode, String> {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
+    })
+}
+
+/// The audit as JSON, with `failing` spelled out.
+///
+/// The field is `!Audit::passes()`, the same predicate the exit code reads: a consumer that
+/// derives it from `violations` and `recomputed_matches` is re-implementing the check.
+fn verify_json(report: &Audit) -> serde_json::Value {
+    serde_json::json!({
+        "accounts": report.accounts,
+        "transactions": report.transactions,
+        "global_sum": report.global_sum.to_string(),
+        "recomputed_matches": report.recomputed_matches,
+        "failing": !report.passes(),
+        "violations": report.violations.iter().map(|v| format!("{:?}: {}", v.kind, v.detail)).collect::<Vec<_>>(),
     })
 }
 
@@ -596,4 +636,42 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &str) -> Result<Vec<T>, Stri
             serde_json::from_str(line).map_err(|error| format!("{path}:{}: {error}", index + 1))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_json;
+    use ledgerlab::{Amount, Audit, Violation, ViolationKind};
+
+    #[test]
+    fn the_json_verdict_is_the_predicate_the_exit_code_reads() {
+        let clean = Audit {
+            accounts: 2,
+            transactions: 1,
+            global_sum: Amount::ZERO,
+            recomputed_matches: true,
+            violations: Vec::new(),
+        };
+        assert_eq!(
+            verify_json(&clean)["failing"],
+            serde_json::Value::Bool(false)
+        );
+
+        // The failing side is unreachable from the binary: `apply` and `replay` refuse every
+        // condition the audit reports, so a corrupted log is an input error (exit 2) before the
+        // audit ever sees it. It is asserted here instead, against a hand-built report, so the
+        // field is pinned to `!passes()` and not merely to the clean case.
+        let broken = Audit {
+            violations: vec![Violation {
+                kind: ViolationKind::BalanceMismatch,
+                detail: "recomputed 1.000000, the ledger says 2.000000".to_owned(),
+            }],
+            ..clean
+        };
+        assert!(!broken.passes());
+        assert_eq!(
+            verify_json(&broken)["failing"],
+            serde_json::Value::Bool(true)
+        );
+    }
 }

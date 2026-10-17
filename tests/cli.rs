@@ -171,6 +171,70 @@ fn a_usage_error_is_exit_2_and_a_clean_ledger_verifies_with_0() {
     );
 }
 
+#[test]
+fn the_json_verdict_of_verify_is_the_exit_code_too() {
+    // the README's rule: `--json` carries the verdict the exit code gates on. `reconcile` did;
+    // `verify` returned `violations` and `recomputed_matches` and left the consumer to derive
+    // `Audit::passes` from them, which is the conflation the field exists to prevent. Only the
+    // clean side is reachable from here — `apply` and `replay` refuse every condition the audit
+    // reports — so the failing side is asserted in `src/main.rs` against a hand-built report.
+    let path = demo_log("verify-json");
+    let log = path.to_str().expect("the temp path is utf-8");
+    let output = ledgerlab(&["verify", "--log", log, "--json"]);
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the output is JSON");
+    assert_eq!(code(&output), 0, "the demo ledger is clean: {output:?}");
+    assert_eq!(
+        json["failing"].as_bool(),
+        Some(false),
+        "a clean ledger must not read as failing: {json}"
+    );
+    assert_eq!(json["violations"].as_array().map(Vec::len), Some(0));
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn the_help_does_not_promise_a_flag_snapshot_never_reads() {
+    // the usage line is the tool's own contract, and it said `snapshot --log <file> --out
+    // <file>` while `snapshot` appends to the log and never reads `--out`: a flag that is
+    // accepted and dropped is how somebody learns their backup went to the wrong place.
+    let output = ledgerlab(&[]);
+    let usage = String::from_utf8_lossy(&output.stdout);
+    assert!(usage.contains("snapshot  --log <file>"), "{usage}");
+    assert!(
+        !usage.contains("snapshot  --log <file> --out"),
+        "snapshot appends to the log; it takes no --out: {usage}"
+    );
+    assert_eq!(code(&output), 2, "no command is a usage error: {output:?}");
+}
+
+#[test]
+fn a_flag_a_command_does_not_read_is_a_usage_error() {
+    // `snapshot --log l --out backup.jsonl` used to exit 0, print a snapshot and write nothing:
+    // the flag was accepted and dropped, which is how somebody learns their backup went nowhere.
+    let path = demo_log("unknown-flag");
+    let log = path.to_str().expect("the temp path is utf-8");
+    let out = temp_path("not-written");
+    let output = ledgerlab(&[
+        "snapshot",
+        "--log",
+        log,
+        "--out",
+        out.to_str().expect("utf-8"),
+    ]);
+    assert_eq!(code(&output), 2, "a usage error, not silence: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--out"), "{stderr}");
+    assert!(!out.exists(), "the flag must not have been half-honoured");
+
+    // and a flag the command does read still works
+    let output = ledgerlab(&["snapshot", "--log", log, "--json"]);
+    assert_eq!(code(&output), 0, "{output:?}");
+
+    std::fs::remove_file(&path).ok();
+}
+
 /// The README's two input formats: "Input files (charts, transactions, statements) are JSONL and
 /// may contain `#` comments … The **event log** is stricter — it is written by this program, so a
 /// line that does not parse there is damage, not a comment. A torn write is reported with its line

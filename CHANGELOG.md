@@ -6,6 +6,9 @@ versioning [SemVer](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `verify --json` exposes `failing`, the verdict its exit code gates on, like `reconcile` already
+  did. The consumer used to have to derive `Audit::passes` from `violations` and
+  `recomputed_matches` — the conflation the field exists to prevent.
 - `Settlement::reason`: why a reference does not settle, or `None` when it does. One classification
   where the report, the `--json` consumer and the exit code each used to derive their own.
 - `Reconciliation::is_failing`: whether **any** divergence means the ledger is wrong, rather than
@@ -13,6 +16,14 @@ versioning [SemVer](https://semver.org/).
 - `reconcile --json` exposes `failing`, the verdict the exit code gates on. `clean` is `false` for a
   pending entry too — the one the report calls a timing difference and returns `0` for — so a machine
   consumer had no field that meant what exit `1` means.
+
+### Fixed
+- A flag a command does not read is a usage error (exit `2`) instead of being accepted and
+  dropped: `snapshot --log l --out backup.jsonl` used to print a snapshot, write nothing, and exit
+  `0`. Each command now declares the flags it reads, and the usage text no longer promises
+  `snapshot` an `--out` it never had.
+- The usage text promised `snapshot --log <file> --out <file>`, and `snapshot` appends to the log:
+  it never read `--out`. The line now says what the command does.
 
 ### Changed
 - `reconcile` matches a statement's entries to the ledger's **by reference**, not by position:
